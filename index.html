@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Sea Monster Survival</title>
 <style>
   html,body{margin:0;height:100%;background:#05070f;overflow:hidden;font-family:"Courier New",monospace;color:#dfe6e6;
@@ -10,11 +13,34 @@
   #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#05070f;}
   canvas{image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;background:#05070f;display:block;}
   #hint{position:fixed;bottom:6px;left:0;right:0;text-align:center;font-size:11px;color:#3a4a5a;pointer-events:none;letter-spacing:1px}
+  #upd{position:fixed;top:8px;left:8px;z-index:10;display:none;background:#0b2a1a;color:#7ff0a0;border:1px solid #2ec26a;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:bold}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="c"></canvas></div>
 <div id="hint">move/aim: arrows·WASD·drag·mouse &nbsp;·&nbsp; space fire &nbsp;·&nbsp; Q drone-cam &nbsp;·&nbsp; E sub-cam &nbsp;·&nbsp; F mine</div>
+<div id="upd">↻ Update ready — tap to reload</div>
+<script>
+(function(){
+  var BUILD="1785886754";
+  function goTo(b){ location.replace('index.html?v='+b); }
+  function chip(b){ var el=document.getElementById('upd'); if(el){ el.style.display='block'; el.onclick=function(){ goTo(b); }; } }
+  function check(initial){
+    fetch('version.json?t='+Date.now(),{cache:'no-store'})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(j){
+        if(!j||!j.build||String(j.build)===String(BUILD)) return;
+        if(initial){
+          try{ if(sessionStorage.getItem('smsReload')===String(j.build)) return; sessionStorage.setItem('smsReload',String(j.build)); }catch(e){}
+          goTo(j.build);
+        } else chip(j.build);
+      })
+      .catch(function(){});
+  }
+  check(true);
+  setInterval(function(){ check(false); }, 60000);
+})();
+</script>
 <script>
 "use strict";
 //======================================================================== SEA MONSTER SURVIVAL v4
