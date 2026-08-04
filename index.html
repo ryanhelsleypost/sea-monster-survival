@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Sea Monster Survival</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070f;overflow:hidden;
+    font-family:"Courier New",monospace;color:#dfe6e6;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#05070f;}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;background:#05070f;display:block;}
+  #hint{position:fixed;bottom:6px;left:0;right:0;text-align:center;font-size:11px;color:#3a4a5a;pointer-events:none;letter-spacing:1px}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<div id="hint">move: arrows / WASD / drag &nbsp;·&nbsp; space fire &nbsp;·&nbsp; Q drone &nbsp;·&nbsp; E deploy mini-sub</div>
+<script>
+"use strict";
+//========================================================================
+// SEA MONSTER SURVIVAL — v2
+//========================================================================
+const VW=480, VH=270, WATER_Y=92, SEA_BOTTOM=VH-6;
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+let scale=1;
+function resize(){
+  const w=window.innerWidth,h=window.innerHeight;
+  scale=Math.max(1,Math.floor(Math.min(w/VW,h/VH)));
+  if(VW*scale>w||VH*scale>h) scale=Math.min(w/VW,h/VH);
+  cv.width=VW*scale; cv.height=VH*scale;
+  cv.style.width=(VW*scale)+'px'; cv.style.height=(VH*scale)+'px';
+  ctx.imageSmoothingEnabled=false;
+}
+addEventListener('resize',resize); resize();
+
+//------------------------------------------------------------ DATA
+const MONSTERS={
+  maja:  {key:'maja',  name:'EL GRAN MAJA', blurb:'Serpent of the trench. Toothed, endless, patient.',
+          body:'#7a2e22', body2:'#a84a34', pale:'#c9b39a', eye:'#ff6a2a', kind:'serpent', size:1.2, spd:1.08, fin:'swallow'},
+  bloop: {key:'bloop', name:'THE BLOOP',    blurb:'A sound too vast to be alive. And yet it moves.',
+          body:'#2f4a5e', body2:'#43647d', pale:'#9fc0d4', eye:'#c9f4ff', kind:'leviathan', size:1.45, spd:0.9, fin:'swallow'},
+  kraken:{key:'kraken',name:'THE KRAKEN',   blurb:'Ten arms, no mercy. It drags you into the dark.',
+          body:'#4a1f3d', body2:'#6e2f59', pale:'#9a5b86', eye:'#ffd23b', kind:'kraken', size:1.3, spd:1.02, fin:'drag'},
+  ningen:{key:'ningen',name:'NINGEN',       blurb:'Pale, smooth, almost human. That is the worst part.',
+          body:'#dfe6e6', body2:'#c2cfcf', pale:'#eef4f4', eye:'#0a0f14', kind:'humanoid', size:1.18, spd:0.98, fin:'swallow'},
+};
+const VEHICLES={
+  boat: {key:'boat', name:'RESEARCH BOAT', surface:true,  spd:1.18, blurb:'Fast on the surface. Blind to the deep below.'},
+  sub:  {key:'sub',  name:'SUBMARINE',     surface:false, spd:0.92, blurb:'Dives deep and armored. Slow to turn.'},
+  scuba:{key:'scuba',name:'SCUBA DIVE',    surface:false, spd:1.32, blurb:'Nimble and brave. Nothing between you and it.'},
+};
+
+//------------------------------------------------------------ AUDIO
+let actx=null,master=null,musicGain=null,musicOn=true,musicTimeout=null,patternStart=0;
+const NOTE={rest:0,G2:98,A2:110,Bb2:116.54,B2:123.47,C3:130.81,D3:146.83,E3:164.81,F3:174.61,G3:196,A3:220,Bb3:233.08,B3:246.94,
+  C4:261.63,D4:293.66,E4:329.63,F4:349.23,G4:392,A4:440,Bb4:466.16,C5:523.25,D5:587.33,D2:73.42};
+const EI=0.185;
+const LEAD_A=[['D4',2],['A3',1],['D4',1],['F4',2], ['E4',2],['D4',1],['C4',1],['D4',2],
+  ['F4',2],['A4',1],['G4',1],['F4',2], ['E4',3],['A3',3],
+  ['D4',2],['A3',1],['D4',1],['F4',2], ['G4',2],['F4',1],['E4',1],['D4',2],
+  ['Bb3',2],['C4',1],['D4',1],['E4',2], ['D4',4],['rest',2]];
+const LEAD_B=[['A4',2],['A4',1],['G4',1],['F4',2], ['G4',2],['F4',1],['E4',1],['D4',2],
+  ['F4',2],['G4',1],['A4',1],['D5',2], ['C5',3],['A4',3],
+  ['A4',2],['A4',1],['G4',1],['F4',2], ['G4',2],['A4',1],['Bb4',1],['A4',2],
+  ['G4',2],['F4',1],['E4',1],['D4',2], ['D4',4],['rest',2]];
+const LEAD=LEAD_A.concat(LEAD_B);
+const bassRoots=['D3','A2','Bb2','A2','D3','G2','A2','A2','D3','F3','Bb2','A2','D3','G2','A2','D3'];
+const BASS=[]; bassRoots.forEach(r=>{BASS.push([r,3]);BASS.push([r,3]);});
+const LOOP_EI=96, LOOP_LEN=LOOP_EI*EI;
+
+function initAudio(){
+  if(actx) return;
+  try{
+    actx=new (window.AudioContext||window.webkitAudioContext)();
+    master=actx.createGain(); master.gain.value=0.9; master.connect(actx.destination);
+    musicGain=actx.createGain(); musicGain.gain.value=musicOn?0.15:0; musicGain.connect(master);
+    patternStart=actx.currentTime+0.12; scheduleLoop();
+  }catch(e){}
+}
+function tone(freq,start,dur,type,peak,dest){
+  if(!freq)return; const o=actx.createOscillator(),g=actx.createGain();
+  o.type=type; o.frequency.value=freq;
+  g.gain.setValueAtTime(0,start); g.gain.linearRampToValueAtTime(peak,start+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,start+dur*0.95);
+  o.connect(g); g.connect(dest||master); o.start(start); o.stop(start+dur);
+}
+function kick(t){ const o=actx.createOscillator(),g=actx.createGain(); o.type='triangle';
+  o.frequency.setValueAtTime(150,t); o.frequency.exponentialRampToValueAtTime(50,t+0.12);
+  g.gain.setValueAtTime(0.45,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.14);
+  o.connect(g); g.connect(musicGain); o.start(t); o.stop(t+0.15); }
+function hat(t,peak){ const n=Math.floor(actx.sampleRate*0.03),buf=actx.createBuffer(1,n,actx.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+  const s=actx.createBufferSource(); s.buffer=buf; const g=actx.createGain(); g.gain.value=peak;
+  const hp=actx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=6500;
+  s.connect(hp); hp.connect(g); g.connect(musicGain); s.start(t); }
+function scheduleLoop(){
+  if(!actx) return;
+  const t0=patternStart;
+  let t=t0; for(const [n,d] of LEAD){ if(n!=='rest') tone(NOTE[n],t,d*EI*0.9,'square',0.4,musicGain); t+=d*EI; }
+  let tb=t0; for(const [n,d] of BASS){ if(n!=='rest') tone(NOTE[n],tb,d*EI*0.95,'triangle',0.7,musicGain); tb+=d*EI; }
+  for(let i=0;i<LOOP_EI;i++){
+    const te=t0+i*EI, bar=Math.floor(i/6), rootF=NOTE[bassRoots[bar]]||146.83, beat=i%6;
+    if(i%2===1) tone(rootF*2,te,EI*0.5,'triangle',0.14,musicGain);
+    if(beat===0||beat===3) kick(te);
+    hat(te,(beat===0||beat===3)?0.04:0.08);
+  }
+  patternStart+=LOOP_LEN;
+  musicTimeout=setTimeout(scheduleLoop,(LOOP_LEN*1000)-60);
+}
+function sfx(kind){
+  if(!actx)return; const t=actx.currentTime;
+  if(kind==='shoot'){ tone(880,t,0.08,'square',0.26); tone(1320,t+0.02,0.06,'square',0.16); }
+  else if(kind==='hit'){ tone(150,t,0.18,'sawtooth',0.38); noise(t,0.15,0.28); }
+  else if(kind==='scare'){ for(let i=0;i<5;i++) tone(720-i*95,t+i*0.03,0.1,'square',0.14); }
+  else if(kind==='roar'){ tone(66,t,0.6,'sawtooth',0.45); tone(99,t,0.6,'triangle',0.28); tone(50,t,0.6,'sine',0.3); }
+  else if(kind==='stun'){ for(let i=0;i<8;i++) tone(200+((i%2)?70:0),t+i*0.05,0.05,'square',0.2); }
+  else if(kind==='torp'){ tone(300,t,0.5,'sawtooth',0.22); tone(150,t,0.5,'square',0.18); }
+  else if(kind==='boom'){ noise(t,0.5,0.5); tone(90,t,0.5,'sawtooth',0.4); tone(60,t+0.05,0.5,'triangle',0.3); }
+  else if(kind==='deploy'){ tone(400,t,0.15,'square',0.2); tone(620,t+0.08,0.2,'triangle',0.2); }
+  else if(kind==='win'){ ['C4','E4','G4','C5'].forEach((n,i)=>tone(NOTE[n],t+i*0.13,0.2,'square',0.3)); }
+  else if(kind==='lose'){ ['D4','C4','A3','F3','D3'].forEach((n,i)=>tone(NOTE[n],t+i*0.17,0.32,'sawtooth',0.3)); }
+  else if(kind==='select'){ tone(660,t,0.06,'square',0.22); tone(990,t+0.04,0.06,'square',0.16); }
+}
+function noise(start,dur,peak){
+  const n=Math.floor(actx.sampleRate*dur),buf=actx.createBuffer(1,n,actx.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+  const s=actx.createBufferSource(); s.buffer=buf; const g=actx.createGain(); g.gain.value=peak;
+  s.connect(g); g.connect(master); s.start(start);
+}
+function toggleMusic(){ musicOn=!musicOn; if(musicGain) musicGain.gain.value=musicOn?0.15:0; }
+
+//------------------------------------------------------------ INPUT
+const keys={};
+let fireEdge=false, fireHeld=false;
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase(); keys[k]=true;
+  if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
+  if(e.key===' '){ if(state==='title'||state==='win'||state==='lose') tapAt(VW/2,VH/2,'tap'); else fireEdge=true; }
+  if(k==='q') edgeTool('drone');
+  if(k==='e') edgeTool('sub');
+});
+addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+function toVirt(cx,cy){ const r=cv.getBoundingClientRect(); return {x:(cx-r.left)/scale,y:(cy-r.top)/scale}; }
+const touches={};
+let mouseDown=false;
+const uiButtons=[];
+let joy={active:false,id:null,ox:0,oy:0,x:0,y:0};
+const fireBtn={x:VW-46,y:VH-46,r:26}, droneBtn={x:VW-92,y:VH-40,r:18}, subBtn={x:VW-92,y:VH-84,r:18}, musicBtn={x:VW-20,y:14,r:11};
+function pointerStart(id,vx,vy){
+  if(dist(vx,vy,musicBtn.x,musicBtn.y)<musicBtn.r+4){ toggleMusic(); return; }
+  if(state==='play'){
+    if(dist(vx,vy,fireBtn.x,fireBtn.y)<fireBtn.r+6){ touches[id]={role:'fire'}; fireHeld=true; fireEdge=true; return; }
+    if(dist(vx,vy,droneBtn.x,droneBtn.y)<droneBtn.r+8){ touches[id]={role:'b'}; edgeTool('drone'); return; }
+    if(dist(vx,vy,subBtn.x,subBtn.y)<subBtn.r+8){ touches[id]={role:'b'}; edgeTool('sub'); return; }
+    if(!joy.active){ joy.active=true; joy.id=id; joy.ox=vx; joy.oy=vy; joy.x=vx; joy.y=vy; touches[id]={role:'joy'}; return; }
+    touches[id]={role:'none'};
+  } else tapAt(vx,vy,'tap');
+}
+function pointerMove(id,vx,vy){ const t=touches[id]; if(t&&t.role==='joy'){ joy.x=vx; joy.y=vy; } }
+function pointerEnd(id){ const t=touches[id]; if(t){ if(t.role==='joy'){ joy.active=false; } if(t.role==='fire'){ fireHeld=false; } delete touches[id]; } }
+cv.addEventListener('touchstart',e=>{ e.preventDefault(); initAudio(); for(const tc of e.changedTouches){ const p=toVirt(tc.clientX,tc.clientY); pointerStart(tc.identifier,p.x,p.y);} },{passive:false});
+cv.addEventListener('touchmove',e=>{ e.preventDefault(); for(const tc of e.changedTouches){ const p=toVirt(tc.clientX,tc.clientY); pointerMove(tc.identifier,p.x,p.y);} },{passive:false});
+cv.addEventListener('touchend',e=>{ e.preventDefault(); for(const tc of e.changedTouches){ pointerEnd(tc.identifier);} },{passive:false});
+cv.addEventListener('touchcancel',e=>{ for(const tc of e.changedTouches){ pointerEnd(tc.identifier);} });
+cv.addEventListener('mousedown',e=>{ initAudio(); mouseDown=true; const p=toVirt(e.clientX,e.clientY); pointerStart('m',p.x,p.y); });
+cv.addEventListener('mousemove',e=>{ if(mouseDown){ const p=toVirt(e.clientX,e.clientY); pointerMove('m',p.x,p.y);} });
+addEventListener('mouseup',()=>{ if(mouseDown){ mouseDown=false; pointerEnd('m'); } });
+
+//------------------------------------------------------------ STATE
+let state='title', sel={monster:null,vehicle:null,time:null}, G=null;
+function tapAt(vx,vy,src){
+  if(state==='title'){ sfx('select'); state='monster'; return; }
+  if(state==='win'||state==='lose'){ sfx('select'); resetToTitle(); return; }
+  for(const b of uiButtons){ if(inRect(vx,vy,b)){ handleMenu(b.id); return; } }
+}
+function pickBtn(){ return {x:VW/2-60,y:VH-70,w:120,h:26}; }
+function inRect(x,y,r){ return x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h; }
+function handleMenu(id){
+  sfx('select');
+  if(id.startsWith('mon:')){ sel.monster=id.slice(4); state='vehicle'; }
+  else if(id.startsWith('veh:')){ sel.vehicle=id.slice(4); state='time'; }
+  else if(id.startsWith('time:')){ sel.time=id.slice(5); startGame(); }
+  else if(id==='back:monster'){ state='monster'; }
+  else if(id==='back:vehicle'){ state='vehicle'; }
+  else if(id==='again'){ resetToTitle(); }
+}
+function edgeTool(which){
+  if(state!=='play'||!G) return;
+  if(which==='drone'){ if(G.drone.cd<=0){ G.drone.active=6; G.drone.cd=13; sfx('deploy'); } }
+  if(which==='sub'){ if(G.control==='player' && G.subTool.cd<=0){ deploySub(); } }
+}
+function resetToTitle(){ sel={monster:null,vehicle:null,time:null}; G=null; state='title'; }
+function startGame(){
+  const m=MONSTERS[sel.monster], v=VEHICLES[sel.vehicle];
+  G={ m,v, night:sel.time==='night',
+    px:120, py:v.surface?WATER_Y-2:170, php:250, phpMax:250,
+    hits:0, stun:0, invul:0, fireCd:0, faceR:true,
+    mx:VW-90, my:220, mvx:0,mvy:0, mhp:1000, mhpMax:1000,
+    mstate:'lurk', mtimer:2, scared:0, attackLanded:false, mrad:30*m.size, telegraph:0, faceMR:-1, mvx0:1,
+    elapsed:0, aggroLvl:0, nextAggro:60,
+    proj:[], parts:[], bubbles:[],
+    control:'player', sub:null, torp:null,
+    drone:{active:0,cd:0}, subTool:{cd:0},
+    result:null, finish:0, finishKind:null, resultHow:null, shake:0, flash:0 };
+  for(let i=0;i<26;i++) G.bubbles.push({x:rnd(0,VW),y:rnd(WATER_Y,VH),s:rnd(1,3),v:rnd(6,18)});
+  state='play'; sfx('roar');
+}
+function deploySub(){ G.sub={x:G.px,y:Math.max(G.py,WATER_Y+16),vx:0,vy:0,deployT:0,timer:6.5}; G.control='sub'; sfx('deploy'); }
+function launchTorpedo(){
+  const s=G.sub; const ang=Math.atan2(G.my-s.y,G.mx-s.x);
+  G.torp={x:s.x,y:s.y,dir:ang,fuel:3.2}; G.control='torpedo'; sfx('torp');
+}
+function endSubMode(){ G.sub=null; G.torp=null; G.control='player'; G.subTool.cd=14; }
+
+//------------------------------------------------------------ HELPERS
+function rnd(a,b){return a+Math.random()*(b-a);}
+function dist(x1,y1,x2,y2){return Math.hypot(x1-x2,y1-y2);}
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+function px(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));}
+function text(s,x,y,c,sz,al){ctx.fillStyle=c||'#dfe6e6';ctx.font='bold '+(sz||8)+'px "Courier New",monospace';ctx.textAlign=al||'left';ctx.textBaseline='top';ctx.fillText(s,Math.round(x),Math.round(y));}
+function button(x,y,w,h,label,hot){
+  px(x+2,y+2,w,h,'#02050a'); px(x,y,w,h,hot?'#123':'#0b1f33');
+  px(x,y,w,2,'#2a5b82'); px(x,y+h-2,w,2,'#04121f');
+  ctx.fillStyle='#bfe6ff';ctx.font='bold 9px "Courier New",monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(label,Math.round(x+w/2),Math.round(y+h/2));
+  uiButtons.push({x,y,w,h,id:'__'}); return uiButtons[uiButtons.length-1];
+}
+
+//------------------------------------------------------------ PLAYER SPRITES
+function drawScientist(x,y,f){
+  px(x-3,y-8,6,3,'#e9e9e9'); px(x-3,y-6,6,4,'#f3d9b0');
+  px(x+(f>0?1:-2),y-5,1,1,'#101820'); px(x-4,y-2,8,7,'#f2f4f6'); px(x-4,y-2,2,7,'#d5dde2'); px(x-2,y+1,4,2,'#2b7fb8');
+}
+function drawBoat(g){ const x=g.px,y=g.py;
+  px(x-20,y+2,40,7,'#7a4a22'); px(x-24,y+4,48,5,'#5e3717'); px(x-20,y+2,40,2,'#a06a34');
+  px(x-6,y-8,14,10,'#c9d3da'); px(x-6,y-8,14,2,'#eef4f6'); px(x-3,y-6,3,3,'#2a5b82');
+  px(x+11,y-16,2,16,'#3a2a18'); px(x+13,y-15,6,4,'#c0392b'); drawScientist(x-14,y-1,1);
+}
+function drawSubVeh(g){ const x=g.px,y=g.py;
+  px(x-22,y-8,44,16,'#c8b23a'); px(x-22,y-8,44,3,'#e6d46a'); px(x-22,y+5,44,3,'#8a7a1e');
+  px(x-26,y-3,5,6,'#8a7a1e'); px(x+22,y-2,5,4,'#8a7a1e');
+  px(x-6,y-14,12,7,'#9fd8ff'); px(x-6,y-14,12,2,'#e6f7ff'); px(x-2,y-4,6,6,'#2233aa'); px(x-1,y-3,3,3,'#9fd8ff');
+  px(x+24,y-5,2,10,'#556'); drawScientist(x-1,y-9,1);
+}
+function drawScuba(g){ const x=g.px,y=g.py;
+  px(x-4,y-9,8,3,'#101820'); px(x-5,y-7,10,5,'#0f2a3a'); px(x-3,y-6,3,2,'#9fd8ff');
+  px(x-6,y-2,12,9,'#12303f'); px(x-6,y-2,3,9,'#0c2430'); px(x+4,y-4,4,10,'#ccc');
+  px(x-9,y+2,4,2,'#0f2a3a'); px(x+6,y+7,5,2,'#0f2a3a'); px(x-2,y+7,4,3,'#0a1a24'); px(x+2,y-6,1,1,'#bfe6ff');
+}
+function drawPlayer(g){ if(g.v.key==='boat') drawBoat(g); else if(g.v.key==='sub') drawSubVeh(g); else drawScuba(g); }
+function drawMiniSub(x,y,s){ // deployable mini-sub, s=scale 0..1
+  const w=Math.round(18*s), h=Math.round(8*s);
+  px(x-w/2,y-h/2,w,h,'#d0e6ef'); px(x-w/2,y-h/2,w,2,'#f0fbff'); px(x-w/2,y+h/2-2,w,2,'#7ba0b0');
+  px(x-w/2-3,y-1,3,3,'#7ba0b0'); px(x+w/2,y-1,3,3,'#7ba0b0');
+  px(x-2,y-h/2-2,5,3,'#9fd8ff'); px(x-1,y-1,3,3,'#2233aa');
+}
+
+//------------------------------------------------------------ MONSTER (nasty + attack anims)
+function drawMonster(g,alpha){
+  const m=g.m; ctx.save(); ctx.globalAlpha=alpha==null?1:alpha;
+  const inAtk=g.mstate==='attack';
+  const tele=clamp((g.telegraph||0)/0.35,0,1);
+  const t01=inAtk?clamp(1-(g.mtimer/0.7),0,1):0;
+  const lungeAmt=inAtk?Math.sin(t01*Math.PI):0;
+  const dir=(g.px>g.mx)?1:-1;
+  const x=g.mx+lungeAmt*24*dir, y=g.my;
+  const mouth=Math.max(inAtk?0.55+lungeAmt*0.45:0, tele*0.85); // 0..1
+  const T=g.elapsed;
+  if(m.kind==='serpent'){
+    for(let i=12;i>=1;i--){
+      const sx=x - g.faceMR*i*9 + Math.sin(T*3 - i*0.5)*12;
+      const sy=y + Math.cos(T*2.4 - i*0.5)*10 + i*1.2;
+      const sz=Math.max(4,14-i*0.5);
+      px(sx-sz/2,sy-sz/2,sz,sz, i%2?m.body:m.body2);
+      if(i%3===0) px(sx-1,sy-sz/2-1,2,2,m.pale);
+    }
+    px(x-18,y-18,36,36,m.body); px(x-18,y-18,36,7,m.body2);
+    const mo=Math.round(4+mouth*12);
+    px(x-mo,y-mo,mo*2,mo*2,'#12060a');            // maw
+    for(let a=0;a<10;a++){ const ang=a/10*Math.PI*2, r=mo; px(x+Math.cos(ang)*r-1,y+Math.sin(ang)*r-1,3,3,m.pale); }
+    if(mouth>0.5) px(x-mo/2,y-mo/2,mo,mo,'#3a0a0a'); // gullet
+    const ep=Math.sin(T*8)*0.5+0.5;
+    px(x+7*dir,y-9,4,4,m.eye); px(x+7*dir,y+3,4,4,m.eye);
+    if(ep>0.6){ px(x+7*dir,y-9,4,1,'#fff'); px(x+7*dir,y+3,4,1,'#fff'); }
+  } else if(m.kind==='leviathan'){
+    const tf=Math.sin(T*4)*8;
+    px(x+16,y-24,16,16,m.body); px(x+30,y-32+tf,12,30,m.body2);  // tail
+    px(x-34,y-22,64,44,m.body); px(x-34,y-22,64,9,m.body2);
+    px(x-8,y-30,12,7,m.body2);                                    // dorsal
+    const mh=Math.round(8+mouth*20);
+    px(x-34,y-2,30,mh,'#0a0406');                                 // gaping mouth
+    for(let i=0;i<8;i++){ px(x-32+i*4,y-2,2,5,m.pale); px(x-32+i*4,y-2+mh-5,2,5,m.pale); }
+    if(mouth>0.6) px(x-30,y+2,20,mh-6,'#2a0808');
+    px(x-18,y-12,8,8,m.eye); px(x-16,y-10,3,3,'#001018');
+  } else if(m.kind==='kraken'){
+    for(let t=0;t<8;t++){
+      const reach=(inAtk?lungeAmt*16:0);
+      for(let s=0;s<12;s++){
+        const base=x-16+t*4.6;
+        const tx=base + Math.sin(T*3 + t + s*0.5)*(s*1.5) + dir*reach*(s/12);
+        const ty=y+4+s*6;
+        const sz=Math.max(3,6-s*0.2);
+        px(tx-sz/2,ty-2,sz,7, s%2?m.body:m.body2);
+        if(s>7) px(tx-1,ty,2,2,m.pale); // suckers/tip
+      }
+    }
+    px(x-18,y-26,36,30,m.body); px(x-18,y-26,36,7,m.body2);       // mantle
+    px(x-13,y-18,9,9,m.eye); px(x+4,y-18,9,9,m.eye);
+    px(x-11,y-16,3,3,'#200'); px(x+6,y-16,3,3,'#200');
+    const bo=Math.round(2+mouth*7);
+    px(x-bo,y-4,bo*2,bo,'#0a0208'); px(x-bo,y-4,bo,bo,'#c9a24a'); px(x,y-4,bo,bo,'#c9a24a'); // beak
+  } else { // ningen — pale, wrong
+    px(x-15,y-28,30,22,m.body); px(x-15,y-28,30,4,m.pale);        // head
+    px(x-10,y-22,7,8,m.eye); px(x+3,y-22,7,8,m.eye);              // huge black eyes
+    if(mouth>0.15){ const mh=Math.round(3+mouth*16); px(x-6,y-10,12,mh,'#0a0406'); for(let i=0;i<5;i++)px(x-5+i*2.4,y-10,1,mh,m.pale); }
+    else px(x-5,y-9,10,2,'#7a8a8a');                              // slit / maw
+    px(x-17,y-6,34,32,m.body); px(x-17,y-6,4,32,m.body2);
+    for(const d of [-1,1]){ const reach=(inAtk?lungeAmt*10:0)*d; const ax=x+d*17+reach;
+      px(ax-(d<0?4:0),y+2,4,22,m.body2);
+      for(let f=0;f<5;f++) px(ax-(d<0?4:0)+(d<0?-2:4), y+22+f*2 - Math.sin(T*2+f), 2,2,m.pale); }
+  }
+  ctx.restore();
+}
+
+//------------------------------------------------------------ BACKDROP
+let stars=[]; for(let i=0;i<40;i++) stars.push({x:rnd(0,VW),y:rnd(0,WATER_Y-6),b:rnd(0.3,1)});
+function drawSky(night){
+  if(night){ for(let y=0;y<WATER_Y;y++){ px(0,y,VW,1,mix('#070b1e','#1a2450',y/WATER_Y)); }
+    for(const s of stars) px(s.x,s.y,1,1,`rgba(220,230,255,${s.b})`);
+    px(VW-70,16,18,18,'#e9ecd6'); px(VW-66,20,10,10,'#0d1330'); }
+  else { for(let y=0;y<WATER_Y;y++){ px(0,y,VW,1,mix('#3f9fd6','#bfe6f5',y/WATER_Y)); }
+    px(64,16,22,22,'#ffe27a'); px(60,20,30,14,'rgba(255,240,150,0.3)'); }
+}
+function drawSea(night,t){
+  const top=night?'#0d3450':'#1d6ea3', bot=night?'#03101d':'#08283e';
+  for(let y=WATER_Y;y<VH;y++){ px(0,y,VW,1,mix(top,bot,(y-WATER_Y)/(VH-WATER_Y))); }
+  for(let x=0;x<VW;x+=6){ const yy=WATER_Y+Math.sin((x+t*40)*0.06)*1.6; px(x,yy,4,2,night?'#2a6f96':'#8fd0ec'); }
+  px(0,WATER_Y-2,VW,2,night?'#0d3450':'#2b86bd');
+}
+function mix(a,b,t){ const ca=hx(a),cb=hx(b);
+  return `rgb(${Math.round(ca[0]+(cb[0]-ca[0])*t)},${Math.round(ca[1]+(cb[1]-ca[1])*t)},${Math.round(ca[2]+(cb[2]-ca[2])*t)})`; }
+function hx(h){ h=h.replace('#',''); return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)]; }
+
+//------------------------------------------------------------ LOOP
+let last=performance.now();
+function loop(now){ let dt=(now-last)/1000; last=now; if(dt>0.05) dt=0.05; if(state==='play') updatePlay(dt); render(); requestAnimationFrame(loop); }
+function updatePlay(dt){
+  const g=G,m=g.m,v=g.v;
+  if(g.result){ g.finish+=dt; if(g.finish>3.2) state=g.result; updateParts(dt); return; }
+  g.elapsed+=dt;
+  if(g.elapsed>=1200){ winGame('survived'); return; }
+  if(g.elapsed>=g.nextAggro){ g.aggroLvl=Math.min(20,g.aggroLvl+1); g.nextAggro+=60; sfx('roar'); g.shake=6; }
+  const aggro=clamp(0.12+g.aggroLvl*0.046,0.12,1);
+
+  // input vector
+  let ix=0,iy=0;
+  if(keys['arrowleft']||keys['a']) ix-=1;
+  if(keys['arrowright']||keys['d']) ix+=1;
+  if(keys['arrowup']||keys['w']) iy-=1;
+  if(keys['arrowdown']||keys['s']) iy+=1;
+  if(joy.active){ const jx=joy.x-joy.ox,jy=joy.y-joy.oy,d=Math.hypot(jx,jy); if(d>4){ ix=clamp(jx/28,-1,1); iy=clamp(jy/28,-1,1);} }
+
+  // ---- controlled entity ----
+  if(g.control==='player'){
+    const spd=88*v.spd;
+    let mix2=ix,miy=iy; if(g.stun>0){ mix2=0; miy=0; }
+    if(mix2<0) g.faceR=false; if(mix2>0) g.faceR=true;
+    g.px=clamp(g.px+mix2*spd*dt,24,VW-24);
+    if(v.surface) g.py=WATER_Y-2+Math.sin(g.elapsed*2)*2; else g.py=clamp(g.py+miy*spd*dt,WATER_Y+8,SEA_BOTTOM-8);
+    // fire harpoon (autofire)
+    g.fireCd-=dt;
+    if((fireHeld||keys[' ']) && g.fireCd<=0){
+      g.fireCd=0.26;
+      const ang=Math.atan2(g.my-g.py,g.mx-g.px)+rnd(-0.06,0.06);
+      g.proj.push({x:g.px,y:g.py,vx:Math.cos(ang)*260,vy:Math.sin(ang)*260,life:1.4}); sfx('shoot');
+    }
+  } else if(g.control==='sub'){
+    const s=g.sub; s.deployT=Math.min(1,s.deployT+dt*3); s.timer-=dt;
+    const spd=120;
+    s.x=clamp(s.x+ix*spd*dt,10,VW-10); s.y=clamp(s.y+iy*spd*dt,WATER_Y+10,SEA_BOTTOM-6);
+    if(fireEdge){ launchTorpedo(); }
+    if(s.timer<=0) endSubMode();
+  } else if(g.control==='torpedo'){
+    const tp=g.torp; tp.fuel-=dt;
+    if(ix||iy) tp.dir=Math.atan2(iy,ix);
+    const sp=170; tp.x+=Math.cos(tp.dir)*sp*dt; tp.y+=Math.sin(tp.dir)*sp*dt;
+    g.parts.push({x:tp.x-Math.cos(tp.dir)*6,y:tp.y-Math.sin(tp.dir)*6,vx:rnd(-8,8),vy:rnd(-8,8),life:0.3,col:'#bcd'});
+    if(dist(tp.x,tp.y,g.mx,g.my)<g.mrad){
+      g.mhp-=100; g.flash=0.2; g.shake=8; sfx('boom');
+      for(let i=0;i<20;i++) g.parts.push({x:tp.x,y:tp.y,vx:rnd(-90,90),vy:rnd(-90,90),life:0.6,col:i%2?'#ffd23b':'#ff7a3a'});
+      g.scared=Math.max(g.scared,1); g.mstate='retreat'; g.mtimer=1;
+      endSubMode();
+      if(g.mhp<=0){ winGame('killed'); return; }
+    } else if(tp.fuel<=0 || tp.x<-10||tp.x>VW+10||tp.y<WATER_Y-10||tp.y>VH+10){ endSubMode(); }
+  }
+  fireEdge=false;
+
+  // harpoon projectiles
+  for(const p of g.proj){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+    if(dist(p.x,p.y,g.mx,g.my)<g.mrad){
+      p.life=0; g.mhp-=50; g.scared=Math.max(g.scared,clamp(1.5-aggro,0.35,1.5));
+      g.mstate='retreat'; g.mtimer=g.scared; sfx('scare'); g.flash=0.1;
+      for(let i=0;i<6;i++) g.parts.push({x:p.x,y:p.y,vx:rnd(-40,40),vy:rnd(-40,40),life:0.4,col:'#ffd23b'});
+      if(g.mhp<=0){ winGame('killed'); return; }
+    }
+  }
+  g.proj=g.proj.filter(p=>p.life>0&&p.x>-10&&p.x<VW+10&&p.y>WATER_Y-30&&p.y<VH+10);
+
+  // ---- monster AI (targets the research vehicle at px,py) ----
+  g.mrad=30*m.size; g.mvx0=g.faceMR;
+  const toP=Math.atan2(g.py-g.my,g.px-g.mx), dP=dist(g.px,g.py,g.mx,g.my);
+  g.mtimer-=dt;
+  if(g.mstate==='lurk'){
+    g.mvx=Math.cos(g.elapsed*0.7)*10*m.spd; g.mvy=Math.cos(g.elapsed*0.5)*8;
+    if(g.mtimer<=0){ g.mstate='approach'; g.mtimer=rnd(2,4)/(0.6+aggro); }
+  } else if(g.mstate==='approach'){
+    const sp=(28+aggro*74)*m.spd; g.mvx=Math.cos(toP)*sp; g.mvy=Math.sin(toP)*sp*0.8;
+    if(dP<74+aggro*20 && g.mtimer<=0){ g.mstate='attack'; g.mtimer=0.7; g.attackLanded=false; g.telegraph=0.35; }
+    if(g.mtimer<=-2 && Math.random()<0.01) g.mstate='lurk';
+  } else if(g.mstate==='attack'){
+    const sp=(130+aggro*150)*m.spd; g.mvx=Math.cos(toP)*sp; g.mvy=Math.sin(toP)*sp;
+    if(!g.attackLanded && dP<g.mrad*0.7+16){ g.attackLanded=true; if(g.invul<=0&&g.stun<=0) hitPlayer(g); }
+    if(g.mtimer<=0){ g.mstate='retreat'; g.mtimer=rnd(0.6,1.1)/(0.5+aggro); }
+  } else if(g.mstate==='retreat'){
+    g.mvx=-Math.cos(toP)*90; g.mvy=-Math.sin(toP)*60-10;
+    if(g.mtimer<=0){ g.mstate='approach'; g.mtimer=rnd(1.4,2.8)/(0.6+aggro); }
+  }
+  if(g.scared>0){ g.scared-=dt; g.mvx-=Math.cos(toP)*40; }
+  g.telegraph-=dt;
+  g.mx=clamp(g.mx+g.mvx*dt,30,VW-30); g.my=clamp(g.my+g.mvy*dt,WATER_Y+18,SEA_BOTTOM-14);
+  g.faceMR=(g.px>g.mx)?1:-1;
+
+  // tools/timers
+  if(g.drone.active>0) g.drone.active-=dt; if(g.drone.cd>0) g.drone.cd-=dt;
+  if(g.subTool.cd>0) g.subTool.cd-=dt;
+  if(g.stun>0) g.stun-=dt; if(g.invul>0) g.invul-=dt;
+  if(g.shake>0) g.shake-=dt*10; if(g.flash>0) g.flash-=dt;
+  for(const b of g.bubbles){ b.y-=b.v*dt; if(b.y<WATER_Y){ b.y=VH; b.x=rnd(0,VW);} }
+  updateParts(dt);
+}
+function hitPlayer(g){
+  g.php-=15; g.hits++; g.invul=0.5; g.shake=5; sfx('hit');
+  for(let i=0;i<8;i++) g.parts.push({x:g.px,y:g.py,vx:rnd(-50,50),vy:rnd(-50,50),life:0.5,col:'#ff5a4a'});
+  if(g.hits>=5){ g.stun=2.4; g.hits=0; sfx('stun'); g.shake=8; if(g.control!=='player') endSubMode(); }
+  if(g.php<=0) loseGame(g);
+}
+function updateParts(dt){ for(const p of G.parts){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt; } G.parts=G.parts.filter(p=>p.life>0); }
+function winGame(how){ G.result='win'; G.finish=0; G.resultHow=how; sfx('win'); }
+function loseGame(g){ g.result='lose'; g.finish=0; g.finishKind=g.m.fin; sfx('lose'); }
+
+//------------------------------------------------------------ RENDER
+function render(){
+  ctx.setTransform(scale,0,0,scale,0,0); ctx.clearRect(0,0,VW,VH); uiButtons.length=0;
+  if(state==='title') renderTitle();
+  else if(state==='monster') renderMonsterSelect();
+  else if(state==='vehicle') renderVehicleSelect();
+  else if(state==='time') renderTimeSelect();
+  else if(state==='play') renderPlay();
+  else if(state==='win'||state==='lose') renderEnd(state==='win');
+  drawMusicBtn();
+}
+function drawMusicBtn(){ ctx.fillStyle='#0b1f33'; ctx.beginPath(); ctx.arc(musicBtn.x,musicBtn.y,musicBtn.r,0,7); ctx.fill();
+  text(musicOn?'♪':'x',musicBtn.x-3,musicBtn.y-4,musicOn?'#7ff0a0':'#66788a',9); }
+function renderTitle(){
+  drawSky(true); drawSea(true,performance.now()/1000); const t=performance.now()/1000;
+  ctx.save(); ctx.globalAlpha=0.5; px(VW/2-40+Math.sin(t)*20,150,80,40,'#04121d');
+  for(let i=0;i<6;i++) px(VW/2-30+i*12,188,6,18+Math.sin(t*2+i)*6,'#04121d'); ctx.restore();
+  drawBanner('SEA MONSTER',VW/2,36,'#bfe6ff'); drawBanner('SURVIVAL',VW/2,64,'#7ff0a0');
+  text('a deep-sea hunt',VW/2,92,'#8fb8cc',9,'center');
+  const b=pickBtn(); button(b.x,b.y,b.w,b.h,'► START',Math.sin(t*4)>0); uiButtons[uiButtons.length-1].id='start';
+  text('tap anywhere to begin',VW/2,VH-34,'#4a5f72',8,'center');
+}
+function drawBanner(s,cx,y,col){ ctx.font='bold 22px "Courier New",monospace'; ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillStyle='#02060c'; ctx.fillText(s,cx+2,y+2); ctx.fillStyle=col; ctx.fillText(s,cx,y); }
+function bg2(){ drawSky(false); drawSea(false,performance.now()/1000); ctx.fillStyle='rgba(2,8,16,0.55)'; ctx.fillRect(0,0,VW,VH); }
+function renderMonsterSelect(){
+  bg2(); text('CHOOSE YOUR QUARRY',VW/2,12,'#bfe6ff',11,'center');
+  const ks=['maja','bloop','kraken','ningen'], cw=104,ch=120,gap=8,x0=(VW-(cw*4+gap*3))/2;
+  for(let i=0;i<4;i++){ const m=MONSTERS[ks[i]],x=x0+i*(cw+gap),y=40;
+    px(x,y,cw,ch,'#081a2b'); px(x,y,cw,2,'#2a5b82'); px(x,y+ch-2,cw,2,'#04121f');
+    const g={m,mx:x+cw/2,my:y+56,faceMR:1,mvx0:1,elapsed:performance.now()/1000,mstate:'lurk',mtimer:1,telegraph:0,px:x,py:0};
+    ctx.save(); ctx.beginPath(); ctx.rect(x+2,y+2,cw-4,74); ctx.clip(); px(x+2,y+2,cw-4,74,'#04121d'); drawMonster(g,1); ctx.restore();
+    text(m.name,x+cw/2,y+82,'#ffd23b',8,'center'); wrap(m.blurb,x+6,y+94,cw-12,8,'#8fb8cc');
+    uiButtons.push({x,y,w:cw,h:ch,id:'mon:'+ks[i]}); }
+  text('tap a monster',VW/2,VH-16,'#4a5f72',8,'center');
+}
+function renderVehicleSelect(){
+  bg2(); text('SELECT YOUR VESSEL',VW/2,12,'#bfe6ff',11,'center'); text('hunting: '+MONSTERS[sel.monster].name,VW/2,26,'#ffd23b',8,'center');
+  const ks=['boat','sub','scuba'],cw=130,ch=130,gap=12,x0=(VW-(cw*3+gap*2))/2;
+  for(let i=0;i<3;i++){ const v=VEHICLES[ks[i]],x=x0+i*(cw+gap),y=44;
+    px(x,y,cw,ch,'#081a2b'); px(x,y,cw,2,'#2a5b82'); px(x,y+ch-2,cw,2,'#04121f'); px(x+2,y+2,cw-4,66,'#0a2233');
+    const gg={px:x+cw/2,py:y+38,v};
+    if(ks[i]==='boat') drawBoat(gg); else if(ks[i]==='sub') drawSubVeh(gg); else drawScuba(gg);
+    text(v.name,x+cw/2,y+74,'#ffd23b',9,'center'); wrap(v.blurb,x+8,y+88,cw-16,8,'#8fb8cc');
+    uiButtons.push({x,y,w:cw,h:ch,id:'veh:'+ks[i]}); }
+  backButton('back:monster');
+}
+function renderTimeSelect(){
+  bg2(); text('WHEN DO YOU SAIL?',VW/2,14,'#bfe6ff',11,'center');
+  const opts=[['day','DAY','the ocean watches back'],['night','NIGHT','you will barely see it coming']];
+  const cw=180,ch=120,gap=20,x0=(VW-(cw*2+gap))/2;
+  for(let i=0;i<2;i++){ const x=x0+i*(cw+gap),y=48,night=opts[i][0]==='night';
+    px(x,y,cw,ch,'#081a2b'); px(x,y,cw,2,'#2a5b82'); px(x,y+ch-2,cw,2,'#04121f');
+    ctx.save(); ctx.beginPath(); ctx.rect(x+2,y+2,cw-4,70); ctx.clip();
+    if(night){ px(x+2,y+2,cw-4,70,'#0a1230'); px(x+cw-30,y+12,12,12,'#e9ecd6'); for(let k=0;k<10;k++) px(x+8+k*15,y+8+(k%3)*10,1,1,'#fff'); }
+    else { px(x+2,y+2,cw-4,70,'#8fd0ec'); px(x+18,y+14,16,16,'#ffe27a'); }
+    px(x+2,y+50,cw-4,22,night?'#0d3450':'#1d6ea3'); ctx.restore();
+    text(opts[i][1],x+cw/2,y+80,'#ffd23b',12,'center'); text(opts[i][2],x+cw/2,y+98,'#8fb8cc',8,'center');
+    uiButtons.push({x,y,w:cw,h:ch,id:'time:'+opts[i][0]}); }
+  backButton('back:vehicle');
+}
+function backButton(id){ button(8,VH-24,54,18,'‹ BACK',false); uiButtons[uiButtons.length-1].id=id; }
+function wrap(str,x,y,w,size,col){ ctx.font='bold '+size+'px "Courier New",monospace'; ctx.textAlign='left';
+  const words=str.split(' '); let line='',yy=y;
+  for(const wd of words){ const test=line+wd+' '; if(ctx.measureText(test).width>w){ text(line,x,yy,col,size,'left'); line=wd+' '; yy+=size+2; } else line=test; }
+  text(line,x,yy,col,size,'left'); }
+
+function renderPlay(){
+  const g=G,t=performance.now()/1000; ctx.save();
+  if(g.shake>0) ctx.translate(rnd(-g.shake,g.shake),rnd(-g.shake,g.shake));
+  drawSky(g.night); drawSea(g.night,t);
+  const dark=g.night?(g.drone.active>0?0.15:0.45):0;
+  if(dark>0){ ctx.fillStyle=`rgba(2,6,14,${dark})`; ctx.fillRect(0,WATER_Y,VW,VH-WATER_Y); }
+  for(const b of g.bubbles) px(b.x,b.y,b.s,b.s,'rgba(180,220,240,0.35)');
+
+  let mAlpha=1; if(g.night&&g.drone.active<=0){ mAlpha=clamp(1.1-dist(g.px,g.py,g.mx,g.my)/160,0.15,1); }
+  drawMonster(g,mAlpha);
+
+  if(g.telegraph>0 && (g.drone.active>0||!g.night)){
+    ctx.strokeStyle='rgba(255,60,60,0.8)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(g.mx,g.my); ctx.lineTo(g.px,g.py); ctx.stroke();
+    px(g.px-10,g.py-10,20,20,'rgba(255,40,40,0.15)');
+  }
+  for(const p of g.proj){ px(p.x-2,p.y-1,5,2,'#ffe27a'); px(p.x,p.y,2,2,'#fff'); }
+  for(const p of g.parts) px(p.x,p.y,2,2,p.col);
+
+  // player vehicle (idle + vulnerable while piloting sub/torpedo)
+  ctx.globalAlpha=(g.invul>0&&Math.floor(t*20)%2)?0.4:1; drawPlayer(g); ctx.globalAlpha=1;
+  if(g.control!=='player'){ px(g.px-2,g.py-22,4,4,'#ffd23b'); text('(unmanned)',g.px,g.py-34,'#8fb8cc',7,'center'); }
+  if(g.stun>0){ text('STUNNED!',g.px,g.py-24,'#ff6a6a',9,'center'); for(let s=0;s<4;s++) px(g.px-8+s*4,g.py-16,2,2,'#ffd23b'); }
+
+  // drone
+  if(g.drone.active>0){ const dx=g.px+Math.sin(t*4)*10,dy=g.py-42; px(dx-4,dy-2,8,4,'#334'); px(dx-6,dy-4,3,2,'#7ff0a0'); px(dx+4,dy-4,3,2,'#7ff0a0'); px(dx-1,dy+2,2,3,'#7ff0a0'); }
+
+  // mini-sub + torpedo
+  if(g.sub){ const s=g.sub; drawMiniSub(s.x,s.y,0.4+s.deployT*0.6);
+    if(g.control==='sub'){ ctx.strokeStyle='rgba(127,240,160,0.5)'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(g.mx,g.my); ctx.stroke(); ctx.setLineDash([]);
+      text('PILOTING SUB — FIRE = TORPEDO',VW/2,VH-58,'#7ff0a0',8,'center');
+      text('sub recalls in '+Math.ceil(s.timer)+'s',VW/2,VH-48,'#8fb8cc',7,'center'); } }
+  if(g.torp){ const tp=g.torp; ctx.save(); ctx.translate(tp.x,tp.y); ctx.rotate(tp.dir);
+    px(-6,-2,12,4,'#e8e8e8'); px(4,-2,3,4,'#ff5a3a'); px(-7,-3,2,6,'#7ba0b0'); ctx.restore();
+    text('STEER TORPEDO',VW/2,VH-52,'#ffd23b',8,'center'); }
+
+  if(g.flash>0){ ctx.fillStyle=`rgba(255,255,255,${g.flash*2})`; ctx.fillRect(0,0,VW,VH); }
+  if(g.result) renderFinisher(g);
+  ctx.restore();
+  renderHUD(g); renderTouchControls(g);
+}
+function renderFinisher(g){
+  const p=clamp(g.finish/2.4,0,1); ctx.fillStyle=`rgba(2,2,6,${p*0.9})`; ctx.fillRect(0,0,VW,VH);
+  if(g.result==='win'){ text(g.resultHow==='killed'?'SPECIMEN NEUTRALIZED':'YOU SURVIVED THE NIGHT',VW/2,VH/2-10,'#7ff0a0',12,'center'); }
+  else {
+    if(g.finishKind==='drag'){
+      for(let t=0;t<8;t++) for(let s=0;s<14;s++){ const tx=g.px+Math.sin(t*1.3+s*0.4)*(s*2)+(t-4)*6, ty=g.py+s*8*p-20; px(tx-3,ty,6,8,s%2?'#4a1f3d':'#6e2f59'); }
+      text('DRAGGED INTO THE DARK',VW/2,30,'#b06a9a',11,'center');
+    } else {
+      const jaw=p*60; px(0,VH/2-70-jaw,VW,60,'#0a0406'); px(0,VH/2+10+jaw,VW,80,'#0a0406');
+      for(let i=0;i<VW;i+=16){ px(i,VH/2-14-jaw,10,20+jaw*0.4,'#d8d0b0'); px(i+6,VH/2+jaw-2,10,20+jaw*0.4,'#d8d0b0'); }
+      px(120,VH/2-40-jaw,26,26,'#ff5a2a'); px(320,VH/2-40-jaw,26,26,'#ff5a2a');
+      text('SWALLOWED WHOLE',VW/2,20,'#ff6a4a',11,'center');
+    }
+  }
+  if(g.finish>1.6) text('tap to continue',VW/2,VH-24,'#8fb8cc',8,'center');
+}
+function renderHUD(g){
+  bar(8,8,120,8,g.php/g.phpMax,'#2ec26a','#0a2a18'); text('HULL',10,9,'#04140c',7);
+  bar(VW-128,8,120,8,g.mhp/g.mhpMax,'#c0392b','#2a0d0a'); text(g.m.name,VW-126,9,'#ffdede',7);
+  const rem=Math.max(0,1200-g.elapsed),mm=Math.floor(rem/60),ss=Math.floor(rem%60);
+  text((mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss,VW/2,8,'#dfe6e6',11,'center'); text('SURVIVE',VW/2,20,'#8fb8cc',7,'center');
+  text('RAGE',10,20,'#ff9a6a',7); for(let i=0;i<20;i++) px(38+i*4,20,3,6,i<g.aggroLvl?'#ff5a3a':'#33202a');
+  for(let i=0;i<5;i++) px(10+i*7,30,5,5,i<g.hits?'#ffd23b':'#20303a');
+}
+function bar(x,y,w,h,f,col,bgc){ px(x,y,w,h,bgc); px(x,y,Math.max(0,w*f),h,col); px(x,y,w,1,'rgba(255,255,255,0.25)'); }
+function renderTouchControls(g){
+  const fireLbl=g.control==='sub'?'TORP':g.control==='torpedo'?'—':'FIRE';
+  ring(fireBtn.x,fireBtn.y,fireBtn.r,'#3a1416','#ff6a5a'); text(fireLbl,fireBtn.x,fireBtn.y-4,'#ffdede',9,'center');
+  ring(droneBtn.x,droneBtn.y,droneBtn.r,g.drone.cd>0?'#20303a':'#12303a',g.drone.active>0?'#7ff0a0':'#4a7a8a');
+  text('DRN',droneBtn.x,droneBtn.y-4,g.drone.cd>0?'#44586a':'#bfe6ff',8,'center'); if(g.drone.cd>0) text(Math.ceil(g.drone.cd),droneBtn.x,droneBtn.y+4,'#ff9a6a',7,'center');
+  const subReady=g.control==='player'&&g.subTool.cd<=0;
+  ring(subBtn.x,subBtn.y,subBtn.r,g.subTool.cd>0?'#20303a':'#12303a',g.control!=='player'?'#7ff0a0':(subReady?'#4a7a8a':'#334'));
+  text('SUB',subBtn.x,subBtn.y-4,subReady?'#bfe6ff':'#44586a',8,'center'); if(g.subTool.cd>0) text(Math.ceil(g.subTool.cd),subBtn.x,subBtn.y+4,'#ff9a6a',7,'center');
+  if(joy.active){ ctx.strokeStyle='rgba(180,220,240,0.4)'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(joy.ox,joy.oy,26,0,7); ctx.stroke();
+    const dx=clamp(joy.x-joy.ox,-26,26),dy=clamp(joy.y-joy.oy,-26,26); ctx.fillStyle='rgba(127,240,160,0.7)'; ctx.beginPath(); ctx.arc(joy.ox+dx,joy.oy+dy,10,0,7); ctx.fill(); }
+}
+function ring(x,y,r,fill,edge){ ctx.fillStyle=fill; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); ctx.strokeStyle=edge; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.stroke(); }
+function renderEnd(win){
+  bg2(); text(win?'VICTORY':'GAME OVER',VW/2,VH/2-30,win?'#7ff0a0':'#ff5a4a',20,'center');
+  text(win?(G&&G.resultHow==='killed'?'The sea is quiet again.':'You outlasted the deep.'):'The deep keeps what it takes.',VW/2,VH/2+2,'#8fb8cc',9,'center');
+  button(VW/2-60,VH/2+24,120,24,'► HUNT AGAIN',true); uiButtons[uiButtons.length-1].id='again';
+  text('tap to return to title',VW/2,VH-24,'#4a5f72',8,'center');
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
