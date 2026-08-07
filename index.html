@@ -22,7 +22,7 @@
 <div id="upd">↻ Update ready — tap to reload</div>
 <script>
 (function(){
-  var BUILD="1786065189";
+  var BUILD="1786065780";
   function goTo(b){ location.replace('index.html?v='+b); }
   function chip(b){ var el=document.getElementById('upd'); if(el){ el.style.display='block'; el.onclick=function(){ goTo(b); }; } }
   function check(initial){
@@ -490,11 +490,12 @@ function wrap(str,x,y,w,size,col){ ctx.font='bold '+size+'px "Courier New",monos
 
 function renderPlay(){ const g=G,t=performance.now()/1000; ctx.save(); if(g.shake>0) ctx.translate(rnd(-g.shake,g.shake),rnd(-g.shake,g.shake));
   drawSky(g.night); drawSea(g.night,t); drawAtlantis(g.night);
-  if(g.night){ ctx.fillStyle='rgba(2,6,14,0.5)'; ctx.fillRect(0,WATER_Y,VW,VH-WATER_Y); }
+  if(g.night){ ctx.fillStyle=`rgba(2,6,14,${g.rig?0.3:0.5})`; ctx.fillRect(0,WATER_Y,VW,VH-WATER_Y);
+    if(g.rig){ ctx.fillStyle='rgba(200,235,255,0.06)'; for(const rr of [72,48,26]){ ctx.beginPath(); ctx.arc(g.rig.x,g.rig.y,rr,0,7); ctx.fill(); } } }
   for(const b of g.bubbles) px(b.x,b.y,b.s,b.s,'rgba(180,220,240,0.35)');
   for(const f of g.farts){ ctx.fillStyle=`rgba(150,205,90,${clamp(f.life/4,0,0.5)})`; ctx.beginPath(); ctx.arc(f.x,f.y,f.r,0,7); ctx.fill(); px(f.x-1,f.y-f.r-2,2,3,'#9bcf5a'); }
   for(const mn of g.mines){ const on=Math.floor(mn.blink*6)%2; px(mn.x-4,mn.y-4,8,8,'#1a2a33'); for(let a=0;a<4;a++){ const ang=a/4*Math.PI*2+0.4; px(mn.x+Math.cos(ang)*6-1,mn.y+Math.sin(ang)*6-1,2,2,'#33454f'); } px(mn.x-1,mn.y-1,2,2,(mn.arm<=0&&on)?'#ff3a3a':'#7a3a3a'); }
-  let mAlpha=1; if(g.night){ mAlpha=clamp(1.1-dist(g.px,g.py,g.mx,g.my)/150,0.15,1); }
+  let mAlpha=1; if(g.night){ const lx=g.rig?g.rig.x:g.px, ly=g.rig?g.rig.y:g.py, rr=g.rig?205:150; mAlpha=clamp(1.1-dist(lx,ly,g.mx,g.my)/rr,0.15,1); }
   drawMonster(g,mAlpha);
   if(g.isEmma && g.smashT>0) text('EMMA SMASH!!',g.mx,g.my-40,'#ff5a8a',11,'center');
   if(!g.rig && !g.night && g.telegraph>0){ ctx.strokeStyle='rgba(255,60,60,0.6)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(g.mx,g.my); ctx.lineTo(g.px,g.py); ctx.stroke(); }
